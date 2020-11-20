@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "PostManoy Instance"
+
+Parameters:
+  KeyName:
+    Description: Name of an existing EC2 key pair for EC2 instance Access.
+    Type: AWS::EC2::KeyPair::KeyName
+  GitUsername:
+    Description: GitHub Username
+    Type: String
+    Default: postmanoy
+  GitPassword:
+    Description: GitHub Password
+    Type: String
+  CaseTagging:
+    Description: GitHub URL for CaseTagging tool
+    Type: String
+    Default: github.com/postmanoy/CaseTagging.git
+  PHCloudOne:
+    Description: GitHub URL for PHCloudOne
+    Type: String
+    Default: github.com/postmanoy/PHCloudOne.git
+  C1WSExam:
+    Description: GitHub URL for C1WSExam
+    Type: String
+    Default: github.com/postmanoy/C1WSExam.git
+  SecurityGroups: 
+    Description: Security Group for Instance
+    Type: 'List<AWS::EC2::SecurityGroup::Id>'
+  Subnet:
+    Description: Subnet for the Instance
+    Type: 'AWS::EC2::Subnet::Id'
+  EC2Name:
+    Description: Name of Instance
+    Type: String
+    Default: PostManoy-Tools
+  HostedZoneName:
+    Description: The route53 HostedZoneName. For example, "mydomain.com."  Don't forget the period at the end.
+    Type: String
+    Default: phcloudone.net.
+  Subdomain:
+    Description: The subdomain of the dns entry. For example, hello -> hello.mydomain.com, hello is the subdomain.
+    Type: String
+    Default: team
+
+Resources: 
+  C1ASPipeline:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-0d5d9d301c853a04a
+      InstanceType: t2.micro
+      KeyName: !Ref KeyName
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: !Ref SecurityGroups
+      Tags:
+      - Key: Name
+        Value: !Ref EC2Name
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt update -y
+          ACTIVATIONURL='dsm://agents.deepsecurity.trendmicro.com:443/'
+          MANAGERURL='https://app.deepsecurity.trendmicro.com:443'
+          CURLOPTIONS='--silent --tlsv1.2'
+          linuxPlatform='';
+          isRPM='';
+
+          if [[ $(/usr/bin/id -u) -ne 0 ]]; then
+              echo You are not running as the root user.  Please try again with root privileges.;
+              logger -t You are not running as the root user.  Please try again with root privileges.;
+              exit 1;
+          fi;
+
+          if ! type curl >/dev/null 2>&1; then
+              echo "Please install CURL before running this script."
+              logger -t Please install CURL before running this script
+              exit 1
+          fi
+
+          CURLOUT=$(eval curl $MANAGERURL/software/deploymentscript/platform/linuxdetectscriptv1/ -o /tmp/PlatformDetection $CURLOPTIONS;)
+          err=$?
+          if [[ $err -eq 60 ]]; then
+              echo "TLS certificate validation for the agent package download has failed. Please check that your Deep Security Manager TLS certificate is signed by a trusted root certificate authority. For more information, search for \"deployment scripts\" in the Deep Security Help Center."
+              logger -t TLS certificate validation for the agent package download has failed. Please check that your Deep Security Manager TLS certificate is signed by a trusted root certificate authority. For more information, search for \"deployment scripts\" in the Deep Security Help Center.
+              exit 1;
+          fi
+
+          if [ -s /tmp/PlatformDetection ]; then
+              . /tmp/PlatformDetection
+          else
+              echo "Failed to download the agent installation support script."
+              logger -t Failed to download the Deep Security Agent installation support script
+              exit 1
+          fi
+
+          platform_detect
+          if [[ -z "$linuxPlatform" ]] || [[ -z "$isRPM" ]]; then
+              echo Unsupported platform is detected
+              logger -t Unsupported platform is detected
+              exit 1
+          fi
+
+          echo Downloading agent package...
+          if [[ $isRPM == 1 ]]; then package='agent.rpm'
+              else package='agent.deb'
+          fi
+          curl -H "Agent-Version-Control: on" $MANAGERURL/software/agent/$runningPlatform$majorVersion/$archType/$package?tenantID=73293 -o /tmp/$package $CURLOPTIONS
+
+          echo Installing agent package...
+          rc=1
+          if [[ $isRPM == 1 && -s /tmp/agent.rpm ]]; then
+              rpm -ihv /tmp/agent.rpm
+              rc=$?
+          elif [[ -s /tmp/agent.deb ]]; then
+              dpkg -i /tmp/agent.deb
+              rc=$?
+          else
+              echo Failed to download the agent package. Please make sure the package is imported in the Deep Security Manager
+              logger -t Failed to download the agent package. Please make sure the package is imported in the Deep Security Manager
+              exit 1
+          fi
+          if [[ $rc != 0 ]]; then
+              echo Failed to install the agent package
+              logger -t Failed to install the agent package
+              exit 1
+          fi
+
+          echo Install the agent package successfully
+
+          sleep 15
+          /opt/ds_agent/dsa_control -r
+          /opt/ds_agent/dsa_control -a $ACTIVATIONURL "tenantID:" "token:" "policyid:34"
+          # /opt/ds_agent/dsa_control -a dsm://agents.deepsecurity.trendmicro.com:443/ "tenantID:" "token:" "policyid:34"
+
+          apt -y install software-properties-common
+          add-apt-repository ppa:ondrej/php
+          apt-get update -y
+          apt-get install -y apache2 mariadb-server libapache2-mod-php7.3 php7.3 php7.3-mysql php7.3-xml php7.3-simplexml php7.3-curl unzip
+          mysql -u root <<EOF
+          CREATE DATABASE casetag;
+          CREATE DATABASE quizdb;
+          CREATE USER 'postmanoy'@'%' IDENTIFIED BY '<password>';
+          GRANT ALL PRIVILEGES ON *.* TO 'postmanoy'@'%';
+          FLUSH PRIVILEGES;
+          EOF
+          sudo sed -i 's/session.gc_maxlifetime = 1440/session.gc_maxlifetime = 3900/g' /etc/php/7.3/apache2/php.ini
+          rm /etc/localtime
+          ln -s /usr/share/zoneinfo/Asia/Manila /etc/localtime
+          date
+          systemctl restart apache2
+          cd /var/www/html/
+          rm -rf index.html
+          mkdir PHCloudOne
+          git clone https://${GitUsername}:${GitPassword}@${PHCloudOne} PHCloudOne/
+          cd PHCloudOne/
+          cp -r * /var/www/html/
+          cd ..
+          rm -rf PHCloudOne/
+          mkdir CaseTagging
+          git clone https://${GitUsername}:${GitPassword}@${CaseTagging} CaseTagging/
+          mysql -u root casetag < CaseTagging/casetag.sql
+          mkdir C1WSExam
+          git clone https://${GitUsername}:${GitPassword}@${C1WSExam} C1WSExam/
+          mysql -u root quizdb < C1WSExam/quizdb.sql
+          systemctl restart apache2
+          
+          cat <<EOF >/home/ubuntu/gitprep.cron
+          mkdir /home/ubuntu/db >> /home/ubuntu/cron.log 2>&1
+          mkdir /home/ubuntu/db/ct >> /home/ubuntu/cron.log 2>&1
+          cd /home/ubuntu/db/ct >> /home/ubuntu/cron.log 2>&1
+          git clone https://${GitUsername}:${GitPassword}@${CaseTagging} >> /home/ubuntu/cron.log 2>&1
+          mkdir /home/ubuntu/db/qd >> /home/ubuntu/cron.log 2>&1
+          cd /home/ubuntu/db/qd >> /home/ubuntu/cron.log 2>&1
+          git clone https://${GitUsername}:${GitPassword}@${C1WSExam} >> /home/ubuntu/cron.log 2>&1
+          EOF
+
+          cat <<EOF >/home/ubuntu/gitpushct.cron
+          cd /home/ubuntu/db/ct/CaseTagging/ >> /home/ubuntu/cron.log 2>&1
+          git add . >> /home/ubuntu/cron.log 2>&1
+          git commit -m "Weekly Update for Database dated: $today" >> /home/ubuntu/cron.log 2>&1
+          git push https://${GitUsername}:${GitPassword}@${CaseTagging} >> /home/ubuntu/cron.log 2>&1
+          EOF
+
+          cat <<EOF >/home/ubuntu/gitpushqd.cron
+          cd /home/ubuntu/db/qd/C1WSExam/ >> /home/ubuntu/cron.log 2>&1
+          git add . >> /home/ubuntu/cron.log 2>&1
+          git commit -m "Weekly Update for Database dated: $today" >> /home/ubuntu/cron.log 2>&1
+          git push https://${GitUsername}:${GitPassword}@${C1WSExam} >> /home/ubuntu/cron.log 2>&1
+          EOF
+
+          echo 'today=$(date);' >> /home/ubuntu/variable.sh
+          chmod 777 /home/ubuntu/gitprep.cron
+          chmod 777 /home/ubuntu/gitpushct.cron
+          chmod 777 /home/ubuntu/gitpushqd.cron
+          chmod 777 /home/ubuntu/variable.sh
+
+          cat <<EOF >/home/ubuntu/crontab.txt
+          0 0 * * * php '/var/www/html/CaseTagging/fetch-SCversions.php' >> /home/ubuntu/cron.log
+          1 0 * * * php '/var/www/html/CaseTagging/fetch-DSversions.php' >> /home/ubuntu/cron.log
+          50 5 * * 6 /home/ubuntu/gitprep.cron >> /home/ubuntu/cron.log 2>&1
+          0 6 * * 6 mysqldump -u root casetag > /home/ubuntu/db/ct/CaseTagging/casetag.sql 2>&1
+          1 6 * * 6 mysqldump -u root quizdb > /home/ubuntu/db/qd/C1WSExam/quizdb.sql 2>&1
+          10 6 * * 6 . /home/ubuntu/variable.sh >> /home/ubuntu/cron.log 2>&1
+          11 6 * * 6 /home/ubuntu/gitpushct.cron >> /home/ubuntu/cron.log 2>&1
+          11 6 * * 6 /home/ubuntu/gitpushqd.cron >> /home/ubuntu/cron.log 2>&1
+          EOF
+
+          crontab /home/ubuntu/crontab.txt
+          service cron restart
+  
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Ref HostedZoneName
+      Comment: DNS name for my instance.
+      Name: !Join ['', [!Ref Subdomain, ., !Ref HostedZoneName]]
+      Type: A
+      TTL: '100'
+      ResourceRecords:
+      - !GetAtt C1ASPipeline.PublicIp
