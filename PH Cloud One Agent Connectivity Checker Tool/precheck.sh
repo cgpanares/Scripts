@@ -339,8 +339,4 @@ case $input in
         exported=0
     ;;
 esac
-#Send Telemetry Data
-telemurl='http://3.138.183.200/telemetry/insert.php'
-ranscript=1
-curl -s -X POST -F 'ranscript'=$ranscript -F 'exported'=$exported $telemurl > /dev/null	
 echo "Thank you for using the tool!"
